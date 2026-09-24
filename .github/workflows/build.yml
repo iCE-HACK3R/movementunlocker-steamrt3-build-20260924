@@ -13,7 +13,7 @@ permissions:
 jobs:
   steamrt3:
     runs-on: ubuntu-latest
-    container: ghcr.io/source2ze/build-containers:steamrt3
+    container: registry.gitlab.steamos.cloud/steamrt/sniper/sdk:latest
     steps:
       - name: Checkout build repo
         uses: actions/checkout@v4
@@ -45,6 +45,21 @@ jobs:
           ref: cs2
           path: hl2sdk-cs2
 
+      - name: Checkout AMBuild
+        uses: actions/checkout@v4
+        with:
+          repository: alliedmodders/ambuild
+          path: ambuild
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          python3 -m pip install --user setuptools
+          cd ambuild
+          python3 setup.py install --user
+          cd ..
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Apply GameAP patch
         shell: bash
         run: |
@@ -68,9 +83,9 @@ jobs:
         run: |
           mkdir build
           cd build
-          python ../configure.py --enable-optimize --sdks cs2
+          python3 ../configure.py --enable-optimize --sdks cs2
           ambuild
-          find package -type f -maxdepth 6 -print -exec sha256sum {} \;
+          find package -maxdepth 6 -type f -print -exec sha256sum {} \;
           strings package/addons/MovementUnlocker/bin/linuxsteamrt64/MovementUnlocker.so | grep -F '2.0.1-gameap'
           tar -C package -czf ../../MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz .
           sha256sum ../../MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz | tee ../../MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz.sha256
