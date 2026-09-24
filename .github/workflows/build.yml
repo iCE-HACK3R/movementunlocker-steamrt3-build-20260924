@@ -1,0 +1,93 @@
+name: Build MovementUnlocker GameAP patch
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'artifacts/**'
+
+permissions:
+  contents: write
+
+jobs:
+  steamrt3:
+    runs-on: ubuntu-latest
+    container: ghcr.io/source2ze/build-containers:steamrt3
+    steps:
+      - name: Checkout build repo
+        uses: actions/checkout@v4
+        with:
+          path: buildrepo
+          persist-credentials: true
+
+      - name: Checkout MovementUnlocker v2.0
+        uses: actions/checkout@v4
+        with:
+          repository: Source2ZE/MovementUnlocker
+          ref: v2.0
+          path: MovementUnlocker
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Checkout Metamod 2.0.0.1469
+        uses: actions/checkout@v4
+        with:
+          repository: alliedmodders/metamod-source
+          ref: 2.0.0.1469
+          path: mmsource-2.0
+          submodules: recursive
+
+      - name: Checkout HL2SDK CS2
+        uses: actions/checkout@v4
+        with:
+          repository: alliedmodders/hl2sdk
+          ref: cs2
+          path: hl2sdk-cs2
+
+      - name: Apply GameAP patch
+        shell: bash
+        run: |
+          git -C MovementUnlocker apply ../buildrepo/patches/movementunlocker-gameap-2000914.patch
+          python3 - <<'PY'
+          import re, pathlib
+          text = pathlib.Path('MovementUnlocker/MovementUnlocker.cpp').read_text()
+          sigs = re.findall(r'pPatchSignature = \(unsigned char \*\)"([^"]+)";', text)
+          masks = re.findall(r'pPatchPattern = "([^"]+)";', text)
+          sig = sigs[-1]
+          mask = masks[-1]
+          byte_count = len(re.findall(r'\\x[0-9A-Fa-f]{2}', sig))
+          assert byte_count == len(mask), (byte_count, len(mask), mask)
+          assert byte_count == 25, byte_count
+          print(f'linux_signature_bytes={byte_count} mask_len={len(mask)}')
+          PY
+
+      - name: Build SteamRT3 package
+        working-directory: MovementUnlocker
+        shell: bash
+        run: |
+          mkdir build
+          cd build
+          python ../configure.py --enable-optimize --sdks cs2
+          ambuild
+          find package -type f -maxdepth 6 -print -exec sha256sum {} \;
+          strings package/addons/MovementUnlocker/bin/linuxsteamrt64/MovementUnlocker.so | grep -F '2.0.1-gameap'
+          tar -C package -czf ../../MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz .
+          sha256sum ../../MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz | tee ../../MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz.sha256
+
+      - name: Commit artifact to repository
+        shell: bash
+        run: |
+          mkdir -p buildrepo/artifacts
+          cp MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz buildrepo/artifacts/
+          cp MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz.sha256 buildrepo/artifacts/
+          cd buildrepo
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add artifacts/MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz artifacts/MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz.sha256
+          if git diff --cached --quiet; then
+            echo 'No artifact changes to commit.'
+          else
+            git commit -m 'Publish MovementUnlocker 2.0.1-gameap SteamRT3 artifact'
+            git push
+          fi

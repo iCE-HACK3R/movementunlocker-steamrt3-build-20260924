@@ -1,0 +1,181 @@
+diff --git a/MovementUnlocker.cpp b/MovementUnlocker.cpp
+index 97d55be..b26855b 100644
+--- a/MovementUnlocker.cpp
++++ b/MovementUnlocker.cpp
+@@ -18,12 +18,14 @@
+  */
+ 
+ #include <stdio.h>
++#include <string.h>
+ #include "MovementUnlocker.h"
+ #include "khook/memory.hpp"
+ #ifdef _WIN32
+ #include <Windows.h>
+ #elif __linux__
+ #include <dlfcn.h>
++#include <link.h>
+ #endif
+ 
+ MovementUnlocker g_MovementUnlocker;
+@@ -33,11 +35,18 @@ const unsigned char *pPatchSignature = (unsigned char *)"\x0F\x86\xAF\x2A\x2A\x2
+ const char *pPatchPattern = "xxx???xxxxxx";
+ int PatchLen = 6;
+ #elif __linux__
+-const unsigned char * pPatchSignature = (unsigned char *)"\x0F\x87\x2A\x2A\x2A\x2A\xF3\x0F\x10\x25\x2A\x2A\x2A\x2A\xF3\x0F\x11\xA5\x2A\x2A\x2A\x2A\x48\x89\xDE";
+-const char* pPatchPattern = "xx????xxxx????xxxx????xxx";
++// CS2 1.41.8.2 / ServerVersion 2000914. The XMM register ModRM bytes and
++// final GPR register are compiler-selected, so wildcard them. This pattern
++// matches exactly once in the Linux libserver.so for build 25472966.
++const unsigned char * pPatchSignature = (unsigned char *)"\x0F\x87\x2A\x2A\x2A\x2A\xF3\x0F\x10\x2A\x2A\x2A\x2A\x2A\xF3\x0F\x11\x2A\x2A\x2A\x2A\x2A\x48\x89\x2A";
++const char* pPatchPattern = "xx????xxx?????xxx?????xx?";
+ int PatchLen = 6;
+ #endif
+ 
++uintptr_t g_PatchAddress = 0;
++unsigned char g_OriginalBytes[6] = {};
++bool g_PatchApplied = false;
++
+ // From https://git.botox.bz/CSSZombieEscape/sm-ext-PhysHooks
+ uintptr_t FindPattern(uintptr_t BaseAddr, const unsigned char* pData, const char* pPattern, size_t MaxSize, bool Reverse)
+ {
+@@ -76,6 +85,78 @@ uintptr_t FindPattern(uintptr_t BaseAddr, const unsigned char* pData, const char
+ 	return 0x00;
+ }
+ 
++#ifdef __linux__
++struct PatternSearchContext
++{
++	uintptr_t ModuleAddress;
++	const unsigned char* Data;
++	const char* Pattern;
++	uintptr_t Match;
++	size_t MatchCount;
++};
++
++static bool PatternMatches(const unsigned char* memory, const unsigned char* data, const char* pattern, size_t length)
++{
++	for (size_t i = 0; i < length; i++)
++	{
++		if (pattern[i] == 'x' && memory[i] != data[i])
++			return false;
++	}
++	return true;
++}
++
++static int FindPatternInModule(struct dl_phdr_info* info, size_t, void* opaque)
++{
++	auto* context = static_cast<PatternSearchContext*>(opaque);
++	bool containsModuleAddress = false;
++	for (ElfW(Half) i = 0; i < info->dlpi_phnum; i++)
++	{
++		const ElfW(Phdr)& segment = info->dlpi_phdr[i];
++		if (segment.p_type != PT_LOAD)
++			continue;
++
++		const uintptr_t begin = info->dlpi_addr + segment.p_vaddr;
++		if (context->ModuleAddress >= begin && context->ModuleAddress < begin + segment.p_memsz)
++		{
++			containsModuleAddress = true;
++			break;
++		}
++	}
++
++	if (!containsModuleAddress)
++		return 0;
++
++	const size_t patternLength = strlen(context->Pattern);
++	for (ElfW(Half) i = 0; i < info->dlpi_phnum; i++)
++	{
++		const ElfW(Phdr)& segment = info->dlpi_phdr[i];
++		if (segment.p_type != PT_LOAD || !(segment.p_flags & PF_X) || segment.p_memsz < patternLength)
++			continue;
++
++		const auto* begin = reinterpret_cast<const unsigned char*>(info->dlpi_addr + segment.p_vaddr);
++		const size_t lastOffset = segment.p_memsz - patternLength;
++		for (size_t offset = 0; offset <= lastOffset; offset++)
++		{
++			if (!PatternMatches(begin + offset, context->Data, context->Pattern, patternLength))
++				continue;
++
++			context->Match = reinterpret_cast<uintptr_t>(begin + offset);
++			context->MatchCount++;
++			if (context->MatchCount > 1)
++				return 1;
++		}
++	}
++	return 1;
++}
++
++static uintptr_t FindUniquePatternInModule(uintptr_t moduleAddress, const unsigned char* data, const char* pattern)
++{
++	PatternSearchContext context{moduleAddress, data, pattern, 0, 0};
++	dl_iterate_phdr(FindPatternInModule, &context);
++	return context.MatchCount == 1 ? context.Match : 0;
++}
++#endif
++
+ PLUGIN_EXPOSE(MovementUnlocker, g_MovementUnlocker);
+ bool MovementUnlocker::Load(PluginId id, ISmmAPI *ismm, char *error, size_t maxlen, bool late)
+ {
+@@ -98,18 +179,24 @@ bool MovementUnlocker::Load(PluginId id, ISmmAPI *ismm, char *error, size_t maxl
+ 
+ #ifdef _WIN32
+ 	uintptr_t pPatchAddress = (uintptr_t)GetProcAddress(pBin, "CreateInterface");
++	pPatchAddress = FindPattern(pPatchAddress, pPatchSignature, pPatchPattern, ULLONG_MAX, true);
+ #elif __linux__
+-	uintptr_t pPatchAddress = (uintptr_t)dlsym(pBin, "CreateInterface");
++	uintptr_t moduleAddress = reinterpret_cast<uintptr_t>(dlsym(pBin, "CreateInterface"));
++	if (!moduleAddress)
++	{
++		snprintf(error, maxlen, "Could not find CreateInterface in %s", pBinPath);
++		return false;
++	}
++	uintptr_t pPatchAddress = FindUniquePatternInModule(moduleAddress, pPatchSignature, pPatchPattern);
+ #endif
+ 
+-	pPatchAddress = FindPattern(pPatchAddress, pPatchSignature, pPatchPattern, ULLONG_MAX, true);
+-
+ 	if (!pPatchAddress)
+ 	{
+-		snprintf(error, maxlen, "Could not find WalkMove patch signature!");
++		snprintf(error, maxlen, "Could not find exactly one WalkMove patch signature!");
+ 		return false;
+ 	}
+ 
++	memcpy(g_OriginalBytes, reinterpret_cast<void*>(pPatchAddress), PatchLen);
+ 	KHook::Memory::SetAccess((void*)pPatchAddress, PatchLen, KHook::Memory::READ | KHook::Memory::WRITE | KHook::Memory::EXECUTE);
+ 
+ #ifdef _WIN32
+@@ -123,6 +210,8 @@ bool MovementUnlocker::Load(PluginId id, ISmmAPI *ismm, char *error, size_t maxl
+ #endif
+ 
+ 	KHook::Memory::SetAccess((void*)pPatchAddress, PatchLen, KHook::Memory::READ | KHook::Memory::EXECUTE);
++	g_PatchAddress = pPatchAddress;
++	g_PatchApplied = true;
+ 	META_CONPRINTF( "[Movement Unlocker] Successfully patched Movement Unlocker!\n" );
+ 
+ 	return true;
+@@ -130,6 +219,14 @@ bool MovementUnlocker::Load(PluginId id, ISmmAPI *ismm, char *error, size_t maxl
+ 
+ bool MovementUnlocker::Unload(char *error, size_t maxlen)
+ {
++	if (!g_PatchApplied)
++		return true;
++
++	KHook::Memory::SetAccess((void*)g_PatchAddress, PatchLen, KHook::Memory::READ | KHook::Memory::WRITE | KHook::Memory::EXECUTE);
++	memcpy(reinterpret_cast<void*>(g_PatchAddress), g_OriginalBytes, PatchLen);
++	KHook::Memory::SetAccess((void*)g_PatchAddress, PatchLen, KHook::Memory::READ | KHook::Memory::EXECUTE);
++	g_PatchApplied = false;
++	g_PatchAddress = 0;
+ 	return true;
+ }
+ 
+@@ -154,7 +251,7 @@ const char *MovementUnlocker::GetLicense()
+ 
+ const char *MovementUnlocker::GetVersion()
+ {
+-	return "2.0";
++	return "2.0.1-gameap";
+ }
+ 
+ const char *MovementUnlocker::GetDate()
