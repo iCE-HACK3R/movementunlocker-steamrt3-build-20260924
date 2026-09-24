@@ -8,7 +8,10 @@ on:
       - 'artifacts/**'
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  ARTIFACT_NAME: MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz
 
 jobs:
   steamrt3:
@@ -19,7 +22,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: buildrepo
-          persist-credentials: true
 
       - name: Checkout MovementUnlocker v2.0
         uses: actions/checkout@v4
@@ -72,23 +74,14 @@ jobs:
           ambuild
           find package -maxdepth 6 -type f -print -exec sha256sum {} \;
           strings package/addons/MovementUnlocker/bin/linuxsteamrt64/MovementUnlocker.so | grep -F '2.0.1-gameap'
-          tar -C package -czf ../../MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz .
-          sha256sum ../../MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz | tee ../../MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz.sha256
+          tar -C package -czf ../../${ARTIFACT_NAME} .
+          sha256sum ../../${ARTIFACT_NAME} | tee ../../${ARTIFACT_NAME}.sha256
 
-      - name: Commit artifact to repository
-        shell: bash
-        run: |
-          mkdir -p buildrepo/artifacts
-          cp MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz buildrepo/artifacts/
-          cp MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz.sha256 buildrepo/artifacts/
-          cd buildrepo
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add artifacts/MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz artifacts/MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz.sha256
-          if git diff --cached --quiet; then
-            echo 'No artifact changes to commit.'
-          else
-            git commit -m 'Publish MovementUnlocker 2.0.1-gameap SteamRT3 artifact'
-            git pull --rebase origin main
-            git push
-          fi
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MovementUnlocker-2.0.1-gameap-steamrt3
+          path: |
+            MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz
+            MovementUnlocker-2.0.1-gameap-steamrt3.tar.gz.sha256
+          retention-days: 7
