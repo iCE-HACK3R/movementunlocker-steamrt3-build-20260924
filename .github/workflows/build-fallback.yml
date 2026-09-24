@@ -88,5 +88,6 @@ jobs:
             echo 'No artifact changes to commit.'
           else
             git commit -m 'Publish MovementUnlocker fallback Linux artifact'
+            git pull --rebase origin main
             git push
           fi

@@ -13,7 +13,7 @@ permissions:
 jobs:
   steamrt3:
     runs-on: ubuntu-latest
-    container: registry.gitlab.steamos.cloud/steamrt/sniper/sdk:latest
+    container: ghcr.io/source2ze/build-containers:steamrt3
     steps:
       - name: Checkout build repo
         uses: actions/checkout@v4
@@ -45,21 +45,6 @@ jobs:
           ref: cs2
           path: hl2sdk-cs2
 
-      - name: Checkout AMBuild
-        uses: actions/checkout@v4
-        with:
-          repository: alliedmodders/ambuild
-          path: ambuild
-
-      - name: Install build dependencies
-        shell: bash
-        run: |
-          python3 -m pip install --user setuptools
-          cd ambuild
-          python3 setup.py install --user
-          cd ..
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
       - name: Apply GameAP patch
         shell: bash
         run: |
@@ -83,7 +68,7 @@ jobs:
         run: |
           mkdir build
           cd build
-          python3 ../configure.py --enable-optimize --sdks cs2
+          python ../configure.py --enable-optimize --sdks cs2
           ambuild
           find package -maxdepth 6 -type f -print -exec sha256sum {} \;
           strings package/addons/MovementUnlocker/bin/linuxsteamrt64/MovementUnlocker.so | grep -F '2.0.1-gameap'
@@ -104,5 +89,6 @@ jobs:
             echo 'No artifact changes to commit.'
           else
             git commit -m 'Publish MovementUnlocker 2.0.1-gameap SteamRT3 artifact'
+            git pull --rebase origin main
             git push
           fi
