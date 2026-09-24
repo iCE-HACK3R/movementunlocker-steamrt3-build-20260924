@@ -1,0 +1,92 @@
+name: Build MovementUnlocker fallback no-container
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'artifacts/**'
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-setuptools build-essential gcc g++
+
+      - name: Checkout build repo
+        uses: actions/checkout@v4
+        with:
+          path: buildrepo
+          persist-credentials: true
+
+      - name: Checkout MovementUnlocker v2.0
+        uses: actions/checkout@v4
+        with:
+          repository: Source2ZE/MovementUnlocker
+          ref: v2.0
+          path: MovementUnlocker
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Checkout Metamod 2.0.0.1469
+        uses: actions/checkout@v4
+        with:
+          repository: alliedmodders/metamod-source
+          ref: 2.0.0.1469
+          path: mmsource-2.0
+          submodules: recursive
+
+      - name: Checkout HL2SDK CS2
+        uses: actions/checkout@v4
+        with:
+          repository: alliedmodders/hl2sdk
+          ref: cs2
+          path: hl2sdk-cs2
+
+      - name: Checkout AMBuild
+        uses: actions/checkout@v4
+        with:
+          repository: alliedmodders/ambuild
+          path: ambuild
+
+      - name: Install AMBuild
+        run: |
+          cd ambuild
+          python3 setup.py install --user
+          cd ..
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Apply patch and build
+        working-directory: MovementUnlocker
+        shell: bash
+        run: |
+          git apply ../buildrepo/patches/movementunlocker-gameap-2000914.patch
+          mkdir build
+          cd build
+          python3 ../configure.py --enable-optimize --sdks cs2
+          ambuild
+          strings package/addons/MovementUnlocker/bin/linuxsteamrt64/MovementUnlocker.so | grep -F '2.0.1-gameap'
+          tar -C package -czf ../../MovementUnlocker-2.0.1-gameap-linux-fallback.tar.gz .
+          sha256sum ../../MovementUnlocker-2.0.1-gameap-linux-fallback.tar.gz | tee ../../MovementUnlocker-2.0.1-gameap-linux-fallback.tar.gz.sha256
+
+      - name: Commit fallback artifact
+        run: |
+          mkdir -p buildrepo/artifacts
+          cp MovementUnlocker-2.0.1-gameap-linux-fallback.tar.gz buildrepo/artifacts/
+          cp MovementUnlocker-2.0.1-gameap-linux-fallback.tar.gz.sha256 buildrepo/artifacts/
+          cd buildrepo
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add artifacts/MovementUnlocker-2.0.1-gameap-linux-fallback.tar.gz artifacts/MovementUnlocker-2.0.1-gameap-linux-fallback.tar.gz.sha256
+          if git diff --cached --quiet; then
+            echo 'No artifact changes to commit.'
+          else
+            git commit -m 'Publish MovementUnlocker fallback Linux artifact'
+            git push
+          fi
